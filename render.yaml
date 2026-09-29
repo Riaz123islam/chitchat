@@ -1,0 +1,53 @@
+# Render blueprint for ChitChat: Socket.IO backend + Next.js frontend.
+# Deploy via: Render Dashboard → New → Blueprint → connect this repo.
+# Both apps share the free plan; no manual URL steps — the services reference
+# each other via fromService, and the backend self-ping uses Render's
+# RENDER_EXTERNAL_URL automatically.
+
+services:
+  - type: web
+    name: chitchat-server
+    runtime: node
+    plan: free
+    rootDir: apps/server
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Bare host is fine: the server normalises origins to https://
+      - key: ALLOWED_ORIGINS
+        fromService:
+          type: web
+          name: chitchat-web
+          property: host
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+
+  - type: web
+    name: chitchat-web
+    runtime: node
+    plan: free
+    rootDir: apps/web
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Bare host is fine: the client prepends https:// when no scheme is set.
+      # Available at build time, so it is baked into the client bundle.
+      - key: NEXT_PUBLIC_SOCKET_URL
+        fromService:
+          type: web
+          name: chitchat-server
+          property: host

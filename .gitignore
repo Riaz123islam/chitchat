@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Builds
+apps/web/.next/
+apps/web/out/
+apps/server/dist/
+
+# Env
+.env
+.env.local
+.env*.local
+apps/*/.env
+apps/*/.env.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+
+# Vercel / Render
+.vercel
+
+*.tsbuildinfo
