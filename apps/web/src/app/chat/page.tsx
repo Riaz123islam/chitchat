@@ -78,10 +78,13 @@ export default function ChatPage() {
   const listRef = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restoreTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionRef = useRef<ChatSession | null>(null);
   sessionRef.current = session;
   const partnerRef = useRef('');
   partnerRef.current = partner;
+  const phaseRef = useRef<Phase>('restoring');
+  phaseRef.current = phase;
 
   const showNotice = useCallback((text: string) => {
     setNotice(text);
@@ -116,6 +119,11 @@ export default function ChatPage() {
     const onConnect = () => {
       setReconnecting(false);
       resume();
+    };
+    const onConnectError = () => {
+      // Socket can't reach the server at all: don't leave the user on the
+      // restoring spinner forever.
+      if (phaseRef.current === 'restoring') setPhase('connection-lost');
     };
     const onReconnectAttempt = () => setReconnecting(true);
     const onDisconnect = () => setReconnecting(true);
@@ -197,6 +205,7 @@ export default function ChatPage() {
     };
 
     socket.on('connect', onConnect);
+    socket.on('connect_error', onConnectError);
     socket.io.on('reconnect_attempt', onReconnectAttempt);
     socket.on('disconnect', onDisconnect);
     socket.io.on('reconnect', onReconnect);
@@ -216,15 +225,23 @@ export default function ChatPage() {
 
     if (socket.connected) resume();
 
+    // Safety net: if the restore handshake never completes (server not
+    // answering, dropped events), stop spinning and offer a retry.
+    restoreTimer.current = setTimeout(() => {
+      if (phaseRef.current === 'restoring') setPhase('connection-lost');
+    }, 20_000);
+
     const ping = setInterval(() => {
       if (socket.connected) socket.emit('presence:ping');
     }, 30_000);
 
     return () => {
       clearInterval(ping);
+      if (restoreTimer.current) clearTimeout(restoreTimer.current);
       if (typingTimer.current) clearTimeout(typingTimer.current);
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
       socket.off('connect', onConnect);
+      socket.off('connect_error', onConnectError);
       socket.io.off('reconnect_attempt', onReconnectAttempt);
       socket.off('disconnect', onDisconnect);
       socket.io.off('reconnect', onReconnect);
