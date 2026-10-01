@@ -34,6 +34,7 @@ const upstashUrl = str('UPSTASH_REDIS_REST_URL');
 const upstashToken = str('UPSTASH_REDIS_REST_TOKEN');
 const supabaseUrl = str('SUPABASE_URL').replace(/\/$/, '');
 const supabaseServiceKey = str('SUPABASE_SERVICE_ROLE_KEY');
+const supabaseAnonKey = str('SUPABASE_ANON_KEY');
 const turnstileSecret = str('TURNSTILE_SECRET_KEY');
 
 export const config = {
@@ -55,6 +56,11 @@ export const config = {
   useSupabase: supabaseUrl !== '' && supabaseServiceKey !== '',
   supabaseUrl,
   supabaseServiceKey,
+  // Anon key is used to validate user JWTs against the Supabase Auth API.
+  // History features require all three Supabase vars; metadata features need
+  // only the URL + service key as before.
+  supabaseAnonKey,
+  useSupabaseAuth: supabaseUrl !== '' && supabaseAnonKey !== '',
   useTurnstile: turnstileSecret !== '',
   turnstileSecret,
 
@@ -65,10 +71,22 @@ export const config = {
   presenceTtlSec: 120,
 
   // Admin/moderation panel. Read lazily (not at import time) so tests and
-  // tooling can set ADMIN_TOKEN at runtime. When empty, the /admin API is
-  // disabled entirely.
+  // tooling can set the vars at runtime. The /admin API is disabled entirely
+  // when neither ADMIN_TOKEN nor ADMIN_PASSWORD_HASH is set.
   get adminToken(): string {
     return str('ADMIN_TOKEN');
+  },
+  // Username for the admin panel login (POST /admin/login).
+  get adminUser(): string {
+    return str('ADMIN_USER', 'admin');
+  },
+  // Scrypt hash of the admin password for POST /admin/login.
+  // Format: "scrypt$<saltHex>$<keyHex>" (N=16384, r=8, p=1, 64-byte key).
+  // Generate one with:
+  //   node -e "const c=require('crypto'),u=require('util'),s=u.promisify(c.scrypt);(async()=>{const salt=c.randomBytes(16),k=await s(process.argv[1],salt,64,{N:16384,r:8,p:1});console.log('scrypt$'+salt.toString('hex')+'$'+k.toString('hex'))})()" '<password>'
+  // Only the hash is stored — the plain password never touches disk or git.
+  get adminPasswordHash(): string {
+    return str('ADMIN_PASSWORD_HASH');
   },
 };
 

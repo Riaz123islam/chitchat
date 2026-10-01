@@ -1,8 +1,10 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Brand, Footer, Logo, PrimaryButton } from '@/components/ui';
+import { useAuth } from '@/components/auth-provider';
 import { resolveSocketUrl } from '@/lib/socket';
 
 function useOnlineCount() {
@@ -35,6 +37,7 @@ export default function LandingPage() {
   const router = useRouter();
   const online = useOnlineCount();
   const [nickname, setNickname] = useState('');
+  const { enabled: authEnabled, loading: authLoading, user, signOut } = useAuth();
 
   const startChatting = () => {
     try {
@@ -71,8 +74,9 @@ export default function LandingPage() {
             Talk to someone you&rsquo;ve never met.
           </h1>
           <p className="mt-5 max-w-xl text-lg leading-relaxed text-zinc-400">
-            ChitChat pairs you with a random stranger for a private, anonymous 1-to-1 text chat.
-            No sign-up. No names. No message history. Just conversation.
+            ChitChat pairs you with a random stranger for a private 1-to-1 text chat.
+            Jump in as a guest — no sign-up needed — or create an account to keep
+            your chat history across devices.
           </p>
           <div className="mt-9 flex flex-col items-center gap-3">
             <input
@@ -85,7 +89,7 @@ export default function LandingPage() {
               className="w-64 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-center text-zinc-100 placeholder:text-zinc-500 focus:border-violet-400 focus:outline-none"
             />
             <PrimaryButton onClick={startChatting}>
-              Start Chatting
+              Continue as Guest
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h14m-6-6 6 6-6 6"
@@ -96,6 +100,40 @@ export default function LandingPage() {
                 />
               </svg>
             </PrimaryButton>
+            {!authLoading && (
+              authEnabled ? (
+                user ? (
+                  <div className="flex items-center gap-3 text-sm text-zinc-400">
+                    <span className="max-w-48 truncate">Signed in as {user.email}</span>
+                    <Link href="/history" className="text-indigo-400 hover:text-indigo-300">
+                      History
+                    </Link>
+                    <button
+                      onClick={() => signOut()}
+                      className="text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+                    >
+                      Log out
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-4 text-sm">
+                    <Link href="/login" className="text-indigo-400 hover:text-indigo-300">
+                      Log in
+                    </Link>
+                    <Link href="/signup" className="text-indigo-400 hover:text-indigo-300">
+                      Sign up
+                    </Link>
+                    <Link href="/history" className="text-zinc-500 hover:text-zinc-300">
+                      Guest history
+                    </Link>
+                  </div>
+                )
+              ) : (
+                <Link href="/history" className="text-sm text-zinc-500 hover:text-zinc-300">
+                  Guest history
+                </Link>
+              )
+            )}
           </div>
           <p className="mt-4 text-sm text-zinc-500">
             Pick your own nickname, or we&rsquo;ll give you a random one like{' '}
@@ -106,8 +144,8 @@ export default function LandingPage() {
         <div className="mt-16 grid w-full max-w-4xl gap-4 text-left sm:grid-cols-3">
           {[
             {
-              title: 'Anonymous by default',
-              body: 'No accounts, no emails, no phone numbers. Your session vanishes when you leave.',
+              title: 'Guest-first, always',
+              body: 'Chat instantly with no account. Guests stay anonymous; an optional account keeps history across devices.',
             },
             {
               title: 'One stranger at a time',

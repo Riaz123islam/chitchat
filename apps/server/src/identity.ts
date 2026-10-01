@@ -65,3 +65,16 @@ export function sanitizeNickname(input: unknown): string | null {
   if (RESERVED.has(cleaned.toLowerCase())) return null;
   return cleaned;
 }
+
+/**
+ * Validate a client-supplied guest id (persistent id from the browser's
+ * cache). Returns the cleaned id, or null when it isn't a plausible token —
+ * callers fall back to minting one server-side.
+ */
+export function sanitizeGuestId(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const v = input.trim();
+  if (v.length < 8 || v.length > 64) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(v)) return null;
+  return v;
+}

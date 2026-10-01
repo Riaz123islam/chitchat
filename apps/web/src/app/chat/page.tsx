@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { getSocket, resetSocket } from '@/lib/socket';
 import { clearSession, loadSession, saveSession, type ChatSession } from '@/lib/session';
+import { saveGuestChat } from '@/lib/guestHistory';
 import { GhostButton } from '@/components/ui';
 
 interface ChatMsg {
@@ -85,6 +86,34 @@ export default function ChatPage() {
   partnerRef.current = partner;
   const phaseRef = useRef<Phase>('restoring');
   phaseRef.current = phase;
+  const roomRef = useRef('');
+  const messagesRef = useRef<ChatMsg[]>([]);
+  messagesRef.current = messages;
+
+  /**
+   * Persist the finished chat for guests (this browser's cache only).
+   * Signed-in users get server-side history, so skip them here.
+   */
+  const saveTranscript = useCallback(() => {
+    const s = sessionRef.current;
+    if (!s || s.accountType !== 'guest' || !roomRef.current || !partnerRef.current) return;
+    const transcript = messagesRef.current.filter((m) => !m.system);
+    if (transcript.length === 0) return;
+    saveGuestChat({
+      roomId: roomRef.current,
+      partnerUsername: partnerRef.current,
+      messages: transcript.map((m) => ({
+        id: m.id,
+        sender: m.sender,
+        text: m.text,
+        ts: m.ts,
+        mine: m.mine,
+      })),
+      endedAt: Date.now(),
+    });
+    // Don't save the same room twice (e.g. partner-left then leave).
+    roomRef.current = '';
+  }, []);
 
   const showNotice = useCallback((text: string) => {
     setNotice(text);
@@ -141,12 +170,13 @@ export default function ChatPage() {
       resume();
     };
 
-    const onRestored = (p: { partnerUsername: string }) => {
+    const onRestored = (p: { roomId: string; partnerUsername: string }) => {
+      roomRef.current = p.roomId;
       setPartner(p.partnerUsername);
       setPhase('chatting');
       pushSystem(`Reconnected with ${p.partnerUsername}.`);
     };
-    const onReady = (p: { sessionId: string; username: string }) => {
+    const onReady = (p: { sessionId: string; username: string; accountType: 'guest' | 'user' }) => {
       // Resume found no live room → back to searching.
       saveSession(p);
       setSession(p);
@@ -162,7 +192,8 @@ export default function ChatPage() {
         setPhase('connection-lost');
       }
     };
-    const onMatch = (p: { partnerUsername: string }) => {
+    const onMatch = (p: { roomId: string; partnerUsername: string }) => {
+      roomRef.current = p.roomId;
       setPartner(p.partnerUsername);
       setMessages([]);
       setPhase('chatting');
@@ -180,6 +211,7 @@ export default function ChatPage() {
       if (p.username !== sessionRef.current?.username) setTyping(p.typing);
     };
     const onPartnerLeft = (p: { reason: string }) => {
+      saveTranscript();
       setTyping(false);
       setPhase('partner-left');
       pushSystem(
@@ -189,10 +221,12 @@ export default function ChatPage() {
       );
     };
     const onNextSearching = () => {
+      saveTranscript();
       setMessages([]);
       setPhase('searching');
     };
     const onRoomEnded = () => {
+      saveTranscript();
       clearSession();
       resetSocket();
       router.replace('/');
@@ -206,6 +240,7 @@ export default function ChatPage() {
       showNotice('Report received. Thanks for helping keep ChitChat safe.');
     };
     const onBlockOk = () => {
+      saveTranscript();
       setConfirmAction(null);
       showNotice('User blocked. You will not be matched with them again.');
       setMessages([]);
@@ -269,7 +304,7 @@ export default function ChatPage() {
       socket.off('report:ok', onReportOk);
       socket.off('block:ok', onBlockOk);
     };
-  }, [router, pushSystem, showNotice]);
+  }, [router, pushSystem, showNotice, saveTranscript]);
 
   // ── Auto-scroll ──────────────────────────────────────────────────────────
   useEffect(() => {

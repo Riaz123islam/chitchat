@@ -6,9 +6,11 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { io as clientIo, type Socket as ClientSocket } from 'socket.io-client';
 import { createServer, type CreatedServer } from '../src/server.js';
-import { flagExplicit } from '../src/admin.js';
+import { flagExplicit, hashPassword } from '../src/admin.js';
 
 const ADMIN_TOKEN = 'test-admin-token-123';
+const ADMIN_USER = 'admin@webital.cloud';
+const ADMIN_PASSWORD = 'test-password-456';
 
 function once<T>(socket: ClientSocket, event: string, timeoutMs = 8000): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -189,5 +191,75 @@ describe('Admin API', () => {
   it('returns 400 when block has no target', async () => {
     const res = await adminFetch('/block', { method: 'POST', body: JSON.stringify({}) });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Admin login (username + password)', () => {
+  let srv: CreatedServer;
+  let port: number;
+
+  beforeAll(async () => {
+    process.env.ADMIN_USER = ADMIN_USER;
+    process.env.ADMIN_PASSWORD_HASH = await hashPassword(ADMIN_PASSWORD);
+  });
+
+  beforeEach(async () => {
+    srv = createServer();
+    port = await srv.start(0);
+  });
+
+  afterEach(async () => {
+    await srv.stop();
+    process.env.ADMIN_TOKEN = ADMIN_TOKEN;
+    process.env.ADMIN_USER = ADMIN_USER;
+    process.env.ADMIN_PASSWORD_HASH = await hashPassword(ADMIN_PASSWORD);
+  });
+
+  const login = (body: unknown) =>
+    fetch(`http://127.0.0.1:${port}/admin/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('rejects wrong credentials', async () => {
+    expect((await login({ username: ADMIN_USER, password: 'nope' })).status).toBe(401);
+    expect((await login({ username: 'someone-else', password: ADMIN_PASSWORD })).status).toBe(401);
+    expect((await login({})).status).toBe(401);
+  });
+
+  it('issues a session token that authorises the API', async () => {
+    const res = await login({ username: ADMIN_USER, password: ADMIN_PASSWORD });
+    expect(res.status).toBe(200);
+    const { token, expiresInSec } = (await res.json()) as { token: string; expiresInSec: number };
+    expect(typeof token).toBe('string');
+    expect(token.length).toBeGreaterThan(32);
+    expect(expiresInSec).toBe(12 * 3600);
+
+    const stats = await fetch(`http://127.0.0.1:${port}/admin/stats`, {
+      headers: { 'x-admin-token': token },
+    });
+    expect(stats.status).toBe(200);
+
+    // A bogus session token is still rejected.
+    const bad = await fetch(`http://127.0.0.1:${port}/admin/stats`, {
+      headers: { 'x-admin-token': 'deadbeef'.repeat(16) },
+    });
+    expect(bad.status).toBe(401);
+  });
+
+  it('returns 503 when no password hash is configured', async () => {
+    delete process.env.ADMIN_PASSWORD_HASH;
+    const res = await login({ username: ADMIN_USER, password: ADMIN_PASSWORD });
+    expect(res.status).toBe(503);
+  });
+
+  it('hashPassword round-trips through the real verifier', async () => {
+    const hash = await hashPassword('another-secret');
+    expect(hash.startsWith('scrypt$')).toBe(true);
+    // logging in with a freshly hashed password works
+    process.env.ADMIN_PASSWORD_HASH = hash;
+    const res = await login({ username: ADMIN_USER, password: 'another-secret' });
+    expect(res.status).toBe(200);
   });
 });

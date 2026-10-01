@@ -20,6 +20,12 @@ export interface Session {
   lastMessageAt: number;
   /** Client IP at session start (best-effort; used for moderation blocks). */
   ip?: string;
+  /** 'user' for signed-in accounts, 'guest' for anonymous sessions. */
+  accountType: 'guest' | 'user';
+  /** Supabase auth user id, set only for signed-in accounts. */
+  userId?: string;
+  /** Persistent guest id from the client's cache, set only for guests. */
+  guestId?: string;
 }
 
 export interface Room {
@@ -48,7 +54,14 @@ export type RoomEndReason =
 // ── Socket.IO event payloads (client → server) ──────────────────────────────
 
 export interface ClientToServerEvents {
-  'session:start': (payload: { turnstileToken?: string; nickname?: string }) => void;
+  'session:start': (payload: {
+    turnstileToken?: string;
+    nickname?: string;
+    /** Persistent guest id from the client's cache (guest sessions). */
+    guestId?: string;
+    /** Supabase access token (signed-in users). */
+    authToken?: string;
+  }) => void;
   'session:resume': (payload: { sessionId: string }) => void;
   'queue:join': () => void;
   'queue:leave': () => void;
@@ -73,7 +86,7 @@ export interface ChatMessage {
 }
 
 export interface ServerToClientEvents {
-  'session:ready': (payload: { sessionId: string; username: string }) => void;
+  'session:ready': (payload: { sessionId: string; username: string; accountType: 'guest' | 'user' }) => void;
   'session:error': (payload: { code: string; message: string }) => void;
   'queue:joined': (payload: { position: number }) => void;
   'queue:left': () => void;

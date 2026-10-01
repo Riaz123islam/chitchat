@@ -3,12 +3,29 @@
 //
 // Message buffers live ONLY in server memory, are capped per room, and are
 // discarded when the chat ends (or by periodic sweep). Nothing is written to
-// disk. The admin API is disabled entirely unless ADMIN_TOKEN is set.
+// disk. The admin API is disabled entirely unless ADMIN_TOKEN or
+// ADMIN_PASSWORD_HASH is set. Moderators sign in with a username + password
+// (POST /admin/login) and receive a 12-hour session token sent as
+// x-admin-token; a configured ADMIN_TOKEN also works as a master key.
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
-import { timingSafeEqual } from 'node:crypto';
+import { randomBytes, scrypt as scryptCb, timingSafeEqual, type ScryptOptions } from 'node:crypto';
+import { promisify } from 'node:util';
 import { config } from './config.js';
 import type { Matchmaker } from './matchmaker.js';
+
+// promisify() picks the no-options overload in the type system; re-type it.
+const scryptAsync = promisify(scryptCb) as (
+  password: string | Buffer,
+  salt: string | Buffer,
+  keylen: number,
+  options: ScryptOptions,
+) => Promise<Buffer>;
+// Must match the parameters used when generating ADMIN_PASSWORD_HASH.
+const SCRYPT_OPTS: ScryptOptions = { N: 16384, r: 8, p: 1 };
+const SESSION_TTL_MS = 12 * 3600 * 1000;
+/** Session token -> expiry timestamp (in-memory; single instance). */
+const sessions = new Map<string, number>();
 
 // ── Explicit-content flagging ─────────────────────────────────────────────
 // Lightweight keyword signal so moderators can spot explicit chats quickly.
@@ -178,25 +195,95 @@ export interface AdminDeps {
   blockAndDisconnect: (target: { sessionId?: string; ip?: string }) => Promise<number>;
 }
 
+function secretMatches(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/** Hash a plain password for ADMIN_PASSWORD_HASH (scrypt, random salt). */
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = (await scrypt(password, salt, 64, SCRYPT_OPTS)) as Buffer;
+  return `scrypt$${salt.toString('hex')}$${key.toString('hex')}`;
+}
+
+async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  const parts = hash.split('$');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+  const salt = Buffer.from(parts[1], 'hex');
+  const expected = Buffer.from(parts[2], 'hex');
+  if (salt.length < 8 || expected.length < 16) return false;
+  try {
+    const derived = (await scrypt(password, salt, expected.length, SCRYPT_OPTS)) as Buffer;
+    return derived.length === expected.length && timingSafeEqual(derived, expected);
+  } catch {
+    return false;
+  }
+}
+
+function validSession(token: string): boolean {
+  if (!token) return false;
+  const exp = sessions.get(token);
+  if (exp === undefined) return false;
+  if (exp <= Date.now()) {
+    sessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
+function adminEnabled(): boolean {
+  return config.adminToken !== '' || config.adminPasswordHash !== '';
+}
+
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const token = config.adminToken;
-  if (!token) {
+  if (!adminEnabled()) {
     res.status(503).json({ error: 'admin_disabled' });
     return;
   }
   const provided = req.header('x-admin-token') ?? '';
-  const a = Buffer.from(provided);
-  const b = Buffer.from(token);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
-    res.status(401).json({ error: 'unauthorized' });
+  if (secretMatches(provided, config.adminToken) || validSession(provided)) {
+    next();
     return;
   }
-  next();
+  res.status(401).json({ error: 'unauthorized' });
 }
 
 export function createAdminRouter(deps: AdminDeps): Router {
   const { matchmaker, moderation, blockAndDisconnect } = deps;
   const router = Router();
+
+  // Username + password sign-in. Issues a 12-hour session token sent back
+  // as x-admin-token. Rate-limited per IP by the /admin limiter in server.ts.
+  router.post('/login', async (req, res) => {
+    if (!adminEnabled() || !config.adminPasswordHash) {
+      res.status(503).json({ error: 'admin_disabled' });
+      return;
+    }
+    const { username, password } = (req.body ?? {}) as {
+      username?: unknown;
+      password?: unknown;
+    };
+    let ok = false;
+    if (typeof username === 'string' && typeof password === 'string') {
+      ok =
+        secretMatches(username, config.adminUser) &&
+        (await verifyPassword(password, config.adminPasswordHash));
+    }
+    if (!ok) {
+      res.status(401).json({ error: 'invalid_credentials' });
+      return;
+    }
+    if (sessions.size > 5000) {
+      const now = Date.now();
+      for (const [t, e] of sessions) if (e <= now) sessions.delete(t);
+    }
+    const token = randomBytes(32).toString('hex');
+    sessions.set(token, Date.now() + SESSION_TTL_MS);
+    res.json({ token, expiresInSec: SESSION_TTL_MS / 1000 });
+  });
 
   router.use(authMiddleware);
 

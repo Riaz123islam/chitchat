@@ -91,6 +91,8 @@ export class Matchmaker {
       suspicion: 0,
       lastMessageText: '',
       lastMessageAt: 0,
+      // Guests by default; server.ts upgrades to 'user' after JWT verification.
+      accountType: 'guest',
     };
     this.sessions.set(id, session);
     return session;

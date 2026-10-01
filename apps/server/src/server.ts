@@ -8,7 +8,8 @@ import { createServer as createHttpServer, type Server as HttpServer } from 'nod
 import { Server as SocketIOServer, type Socket } from 'socket.io';
 import { config } from './config.js';
 import { db } from './db.js';
-import { isValidSessionId } from './identity.js';
+import { deleteAuthUser, verifySupabaseToken } from './auth.js';
+import { isValidSessionId, sanitizeGuestId } from './identity.js';
 import { Matchmaker } from './matchmaker.js';
 import { countUrls, filterProfanity, isShouting } from './profanity.js';
 import { KeyedRateLimiter } from './ratelimit.js';
@@ -123,6 +124,82 @@ export function createServer(): CreatedServer {
     });
   });
 
+  /**
+   * Save an ended chat for signed-in participants. Guests keep their history
+   * on their own device instead. Messages come from the in-memory moderation
+   * buffer (raw text, never disk). Skipped for moderator blocks.
+   */
+  const persistHistory = (
+    roomId: string,
+    participants: Array<Session | null | undefined>,
+    endReason: string,
+  ): void => {
+    if (endReason === 'blocked') return;
+    const buffered = moderation.getMessages(roomId);
+    if (buffered.length === 0) return;
+    for (const p of participants) {
+      if (!p || p.accountType !== 'user' || !p.userId) continue;
+      const other = participants.find((q) => q && q.id !== p.id);
+      // db.insertChatHistory no-ops when Supabase isn't configured, so no
+      // config guard is needed here (and the persistence stays testable).
+      void db.insertChatHistory({
+        userId: p.userId,
+        username: p.username,
+        roomId,
+        partnerUsername: other?.username ?? 'Stranger',
+        messages: buffered.map((m) => ({
+          id: m.id,
+          sender: m.username,
+          text: m.text,
+          ts: m.ts,
+          mine: m.sessionId === p.id,
+        })),
+        endReason,
+      });
+    }
+  };
+
+  // Chat history for the signed-in user (Bearer <supabase access token>).
+  app.get('/api/history', async (req: Request, res: Response) => {
+    const header = req.header('authorization');
+    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+    const user = await verifySupabaseToken(token);
+    if (!user) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const rows = await db.getChatHistory(user.id);
+    if (!rows) {
+      res.status(503).json({ error: 'history_unavailable' });
+      return;
+    }
+    res.json({ chats: rows });
+  });
+
+  // Delete the signed-in user's account: wipes their chat history, then
+  // removes the auth user itself. Best-effort — reports 207 if the auth
+  // user deletion fails after history was already wiped.
+  app.delete('/api/account', async (req: Request, res: Response) => {
+    const header = req.header('authorization');
+    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : undefined;
+    const user = await verifySupabaseToken(token);
+    if (!user) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const historyGone = await db.deleteChatHistory(user.id);
+    const authGone = await deleteAuthUser(user.id);
+    if (historyGone && authGone) {
+      res.json({ ok: true });
+      return;
+    }
+    res.status(historyGone ? 207 : 503).json({
+      ok: false,
+      historyDeleted: historyGone,
+      accountDeleted: authGone,
+    });
+  });
+
   // ── Admin moderation API ─────────────────────────────────────────────
   // The panel (served from the web origin) calls these cross-origin, so the
   // Socket.IO CORS config doesn't cover them — handle CORS here.
@@ -232,6 +309,7 @@ export function createServer(): CreatedServer {
     const ended = matchmaker.endRoom(room.id, reason);
     if (!ended) return null;
     void db.endRoom(room.id, reason);
+    persistHistory(room.id, [s, partner], reason);
     for (const p of [s, partner]) {
       const sock = p?.socketId
         ? (io.sockets.sockets.get(p.socketId) as IoSocket | undefined)
@@ -285,7 +363,7 @@ export function createServer(): CreatedServer {
       return s;
     };
 
-    socket.on('session:start', async ({ turnstileToken, nickname }) => {
+    socket.on('session:start', async ({ turnstileToken, nickname, guestId, authToken }) => {
       if ((socket.data as { sessionId?: string }).sessionId) {
         socket.emit('session:error', { code: 'already_started', message: 'Session already started.' });
         return;
@@ -308,9 +386,27 @@ export function createServer(): CreatedServer {
         return;
       }
       session.ip = ip;
+      // Identity: a valid Supabase token makes this a signed-in account;
+      // otherwise it's a guest with a persistent id from the browser cache.
+      // The client IP is always recorded as a secondary signal.
+      if (authToken !== undefined) {
+        const verified = await verifySupabaseToken(authToken);
+        if (!verified) {
+          socket.emit('session:error', {
+            code: 'auth_invalid',
+            message: 'Your login expired. Please log in again.',
+          });
+          return;
+        }
+        session.accountType = 'user';
+        session.userId = verified.id;
+      } else {
+        session.accountType = 'guest';
+        session.guestId = sanitizeGuestId(guestId) ?? randomUUID();
+      }
       (socket.data as { sessionId?: string }).sessionId = session.id;
       void db.upsertSession(session.id, session.username, 'online');
-      socket.emit('session:ready', { sessionId: session.id, username: session.username });
+      socket.emit('session:ready', { sessionId: session.id, username: session.username, accountType: session.accountType });
     });
 
     socket.on('session:resume', ({ sessionId }) => {
@@ -345,7 +441,7 @@ export function createServer(): CreatedServer {
         session.status = 'online';
         session.roomId = null;
       }
-      socket.emit('session:ready', { sessionId: session.id, username: session.username });
+      socket.emit('session:ready', { sessionId: session.id, username: session.username, accountType: session.accountType });
     });
 
     socket.on('queue:join', async () => {
@@ -570,6 +666,9 @@ export function createServer(): CreatedServer {
       const result = await matchmaker.handleDisconnect(socket.id);
       if (!result) return;
       void db.setSessionStatus(result.session.id, 'offline');
+      if (result.endedRoomId) {
+        persistHistory(result.endedRoomId, [result.session, result.partner], 'disconnect');
+      }
       if (result.endedRoomId && result.partner?.socketId) {
         const partnerSocket = io.sockets.sockets.get(result.partner.socketId) as IoSocket | undefined;
         if (partnerSocket) {

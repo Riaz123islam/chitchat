@@ -31,6 +31,33 @@ async function postgrest(
   }
 }
 
+async function getJson(path: string): Promise<unknown[] | null> {
+  if (!config.useSupabase) return null;
+  try {
+    const res = await fetch(`${config.supabaseUrl}/rest/v1/${path}`, {
+      headers: {
+        apikey: config.supabaseServiceKey,
+        Authorization: `Bearer ${config.supabaseServiceKey}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as unknown[];
+  } catch {
+    return null;
+  }
+}
+
+export interface ChatHistoryRow {
+  id: string;
+  username: string;
+  room_id: string;
+  partner_username: string;
+  messages: Array<{ id: string; sender: string; text: string; ts: number }>;
+  end_reason: string | null;
+  ended_at: string;
+}
+
 export const db = {
   /** Best-effort session registry (metadata only). */
   upsertSession(id: string, username: string, status: string): Promise<boolean> {
@@ -79,6 +106,47 @@ export const db = {
 
   insertBlock(blockerId: string, blockedId: string): Promise<boolean> {
     return postgrest('blocks', 'POST', { blocker_id: blockerId, blocked_id: blockedId });
+  },
+
+  /**
+   * Persist one participant's view of an ended chat. Only called for
+   * signed-in users — guests keep their history on their own device.
+   * The messages come from the in-memory moderation buffer (never disk).
+   */
+  insertChatHistory(entry: {
+    userId: string;
+    /** The owner's anonymous username in that chat (for mine/theirs display). */
+    username: string;
+    roomId: string;
+    partnerUsername: string;
+    messages: Array<{ id: string; sender: string; text: string; ts: number }>;
+    endReason: string;
+  }): Promise<boolean> {
+    return postgrest('chat_history', 'POST', {
+      user_id: entry.userId,
+      username: entry.username,
+      room_id: entry.roomId,
+      partner_username: entry.partnerUsername,
+      messages: entry.messages,
+      end_reason: entry.endReason,
+    });
+  },
+
+  /** Most recent chats for a signed-in user, newest first. */
+  async getChatHistory(userId: string, limit = 50): Promise<ChatHistoryRow[] | null> {
+    const rows = await getJson(
+      `chat_history?user_id=eq.${encodeURIComponent(userId)}&order=ended_at.desc&limit=${limit}`,
+    );
+    return Array.isArray(rows) ? (rows as ChatHistoryRow[]) : null;
+  },
+
+  /** Delete all history rows for a user (account deletion). */
+  deleteChatHistory(userId: string): Promise<boolean> {
+    return postgrest(
+      `chat_history?user_id=eq.${encodeURIComponent(userId)}`,
+      'DELETE',
+      undefined,
+    );
   },
 
   /**

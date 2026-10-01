@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getSocket, resetSocket } from '@/lib/socket';
 import { loadSession, saveSession } from '@/lib/session';
+import { getGuestId } from '@/lib/guest';
+import { useAuth } from '@/components/auth-provider';
 import { Brand, GhostButton } from '@/components/ui';
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
@@ -78,6 +80,7 @@ export default function SearchingPage() {
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0); // bump to retry
   const [token, setToken] = useState<string | undefined>(undefined);
+  const { getAccessToken, signOut } = useAuth();
 
   const start = useCallback(
     (turnstileToken?: string) => {
@@ -90,21 +93,30 @@ export default function SearchingPage() {
         setPhase('error');
       };
 
-      const beginSearch = () => {
+      const beginSearch = async () => {
         const saved = loadSession();
         if (saved) {
           socket.emit('session:resume', { sessionId: saved.sessionId });
         } else {
           const nickname = loadNickname();
-          socket.emit(
-            'session:start',
-            turnstileToken ? { turnstileToken, nickname } : { nickname },
-          );
+          // Identity: signed-in users send their Supabase token; everyone
+          // else sends the persistent guest id from this browser's cache.
+          const authToken = await getAccessToken().catch(() => null);
+          const payload: {
+            turnstileToken?: string;
+            nickname?: string;
+            guestId?: string;
+            authToken?: string;
+          } = { nickname };
+          if (turnstileToken) payload.turnstileToken = turnstileToken;
+          if (authToken) payload.authToken = authToken;
+          else payload.guestId = getGuestId();
+          socket.emit('session:start', payload);
         }
       };
 
       const onConnect = () => beginSearch();
-      const onReady = (p: { sessionId: string; username: string }) => {
+      const onReady = (p: { sessionId: string; username: string; accountType: 'guest' | 'user' }) => {
         saveSession(p);
         socket.emit('queue:join');
         setPhase('searching');
@@ -119,7 +131,10 @@ export default function SearchingPage() {
           } catch {
             /* ignore */
           }
-          socket.emit('session:start', { turnstileToken, nickname: loadNickname() });
+          beginSearch();
+        } else if (p.code === 'auth_invalid') {
+          // Signed-in token rejected: drop the local login and ask to retry.
+          void signOut().finally(() => fail('Your login expired. Please log in again.'));
         } else {
           fail(p.message || 'Could not start a session.');
         }
@@ -162,7 +177,7 @@ export default function SearchingPage() {
         socket.off('connect_error', onConnectError);
       };
     },
-    [router],
+    [router, getAccessToken, signOut],
   );
 
   useEffect(() => {

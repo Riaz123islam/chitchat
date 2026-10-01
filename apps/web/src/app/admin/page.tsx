@@ -1,6 +1,7 @@
-// Admin moderation panel (unlisted route). Token-gated: the admin enters the
-// ADMIN_TOKEN once per browser session; it's sent as x-admin-token to the
-// chat server's /admin API. Not linked from the public site.
+// Admin moderation panel (unlisted route). Username + password sign-in:
+// the credentials go to the chat server's POST /admin/login, which returns
+// a 12-hour session token kept in sessionStorage and sent as x-admin-token.
+// Not linked from the public site.
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
@@ -70,7 +71,9 @@ function timeAgo(ts: number): string {
 
 export default function AdminPage() {
   const [token, setToken] = useState<string | null>(null);
-  const [tokenInput, setTokenInput] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [signingIn, setSigningIn] = useState(false);
   const [authError, setAuthError] = useState('');
   const [stats, setStats] = useState<Stats | null>(null);
   const [rooms, setRooms] = useState<RoomInfo[]>([]);
@@ -97,7 +100,7 @@ export default function AdminPage() {
         } catch {
       /* ignore */}
         setToken(null);
-        setAuthError('Wrong token. Try again.');
+        setAuthError('Session expired. Sign in again.');
         throw new Error('unauthorized');
       }
       if (!res.ok) throw new Error(`request failed: ${res.status}`);
@@ -157,16 +160,33 @@ export default function AdminPage() {
     };
   }, [token, openRoom, api]);
 
-  const submitToken = (e: FormEvent) => {
+  const submitLogin = async (e: FormEvent) => {
     e.preventDefault();
-    const t = tokenInput.trim();
-    if (!t) return;
-    try {
-      sessionStorage.setItem('chitchat:admin-token', t);
-    } catch {
-      /* ignore */}
+    if (!usernameInput.trim() || !passwordInput || signingIn) return;
+    setSigningIn(true);
     setAuthError('');
-    setToken(t);
+    try {
+      const res = await fetch(`${apiBase()}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: usernameInput.trim(), password: passwordInput }),
+      });
+      if (!res.ok) {
+        setAuthError(res.status === 503 ? 'Admin login is not enabled on the server.' : 'Wrong username or password.');
+        return;
+      }
+      const data = (await res.json()) as { token: string };
+      try {
+        sessionStorage.setItem('chitchat:admin-token', data.token);
+      } catch {
+      /* ignore */}
+      setPasswordInput('');
+      setToken(data.token);
+    } catch {
+      setAuthError('Sign in failed. Try again.');
+    } finally {
+      setSigningIn(false);
+    }
   };
 
   const blockPeer = async (peer: RoomPeer, roomId: string) => {
@@ -199,22 +219,32 @@ export default function AdminPage() {
   if (!token) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-4">
-        <form onSubmit={submitToken} className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+        <form onSubmit={submitLogin} className="w-full max-w-sm rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
           <h1 className="text-lg font-semibold text-zinc-100">Moderation sign in</h1>
-          <p className="mt-1 text-sm text-zinc-400">Enter the admin token to monitor chats.</p>
+          <p className="mt-1 text-sm text-zinc-400">Sign in with your admin account to monitor chats.</p>
+          <input
+            type="text"
+            value={usernameInput}
+            onChange={(e) => setUsernameInput(e.target.value)}
+            placeholder="Username"
+            autoComplete="username"
+            className="mt-4 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400 focus:outline-none"
+          />
           <input
             type="password"
-            value={tokenInput}
-            onChange={(e) => setTokenInput(e.target.value)}
-            placeholder="Admin token"
-            className="mt-4 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400 focus:outline-none"
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            placeholder="Password"
+            autoComplete="current-password"
+            className="mt-3 w-full rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400 focus:outline-none"
           />
           {authError && <p className="mt-2 text-sm text-red-400">{authError}</p>}
           <button
             type="submit"
-            className="mt-4 w-full rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400"
+            disabled={signingIn}
+            className="mt-4 w-full rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-400 disabled:opacity-60"
           >
-            Sign in
+            {signingIn ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
       </main>

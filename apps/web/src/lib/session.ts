@@ -4,6 +4,7 @@
 export interface ChatSession {
   sessionId: string;
   username: string;
+  accountType: 'guest' | 'user';
 }
 
 const KEY = 'chitchat:session';
@@ -15,6 +16,8 @@ export function loadSession(): ChatSession | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as ChatSession;
     if (typeof parsed.sessionId === 'string' && typeof parsed.username === 'string') {
+      // Sessions saved before accountType existed are guests.
+      if (parsed.accountType !== 'user') parsed.accountType = 'guest';
       return parsed;
     }
     return null;
