@@ -236,7 +236,7 @@ describe('ChitChat end-to-end', () => {
     a.on('message:error', (p: { code: string }) => errors.push(p.code));
 
     // Oversized.
-    a.emit('message:send', { text: 'x'.repeat(501) });
+    a.emit('message:send', { text: 'x'.repeat(2001) });
     // Duplicate.
     a.emit('message:send', { text: 'same text twice' });
     a.emit('message:send', { text: 'same text twice' });
