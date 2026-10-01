@@ -22,6 +22,11 @@ export default function PrivacyPage() {
           relayed in real time and then gone.
         </li>
         <li>
+          <strong>Safety review buffer:</strong> while a chat is active, the most recent messages
+          are held in the server&rsquo;s temporary memory (never written to disk) so our moderators
+          can review reported or flagged abuse. This buffer is discarded the moment the chat ends.
+        </li>
+        <li>
           <strong>Reports and blocks:</strong> if you report or block someone, we store the session
           ids involved, the room id, the report reason, and a timestamp — again, never message
           text. This is what lets us ban repeat offenders.
@@ -44,6 +49,7 @@ export default function PrivacyPage() {
       <ul>
         <li>Sessions expire after 30 minutes of inactivity and are purged.</li>
         <li>Chat rooms are deleted the moment they end.</li>
+        <li>The safety review buffer is discarded when the chat ends and is never stored.</li>
         <li>Reports and blocks are kept for up to 30 days for moderation, then deleted.</li>
       </ul>
 
@@ -51,8 +57,9 @@ export default function PrivacyPage() {
       <p>
         Hosting providers process data on our behalf to run the service: Vercel (website), Render
         (chat server), Supabase (database), and Upstash (matchmaking queue). If bot protection is
-        enabled, Cloudflare Turnstile verifies you&rsquo;re human. None of them receive your
-        messages, because we never store them.
+        enabled, Cloudflare Turnstile verifies you&rsquo;re human. Your messages pass through the
+        server&rsquo;s temporary memory for delivery and safety review &mdash; they are never
+        written to disk or shared with third parties.
       </p>
 
       <h2>Your rights</h2>

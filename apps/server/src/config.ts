@@ -63,6 +63,13 @@ export const config = {
   queueStaleMs: 90_000,
   sessionIdleMs: 30 * 60_000,
   presenceTtlSec: 120,
+
+  // Admin/moderation panel. Read lazily (not at import time) so tests and
+  // tooling can set ADMIN_TOKEN at runtime. When empty, the /admin API is
+  // disabled entirely.
+  get adminToken(): string {
+    return str('ADMIN_TOKEN');
+  },
 };
 
 export type Config = typeof config;

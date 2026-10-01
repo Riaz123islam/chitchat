@@ -18,6 +18,8 @@ export interface Session {
   /** Last message text, used for duplicate-spam detection. */
   lastMessageText: string;
   lastMessageAt: number;
+  /** Client IP at session start (best-effort; used for moderation blocks). */
+  ip?: string;
 }
 
 export interface Room {

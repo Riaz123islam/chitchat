@@ -12,6 +12,7 @@ import { isValidSessionId } from './identity.js';
 import { Matchmaker } from './matchmaker.js';
 import { countUrls, filterProfanity, isShouting } from './profanity.js';
 import { KeyedRateLimiter } from './ratelimit.js';
+import { createAdminRouter, createModeration, flagExplicit } from './admin.js';
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -37,6 +38,21 @@ function messageText(input: unknown): { ok: true; text: string } | { ok: false; 
   if (text.length === 0) return { ok: false, code: 'empty' };
   if (text.length > config.maxMessageLength) return { ok: false, code: 'too_long' };
   return { ok: true, text };
+}
+
+/**
+ * Best-effort client IP. The server runs behind the platform's proxy, so the
+ * TCP peer address is the proxy's — the real client IP comes from
+ * X-Forwarded-For. Without this, an IP block would hit every user at once.
+ */
+function getClientIp(
+  headers: Record<string, string | string[] | undefined>,
+  fallback?: string,
+): string {
+  const fwd = headers['x-forwarded-for'];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd;
+  const ip = first?.split(',')[0]?.trim();
+  return ip || fallback || 'unknown';
 }
 
 async function verifyTurnstile(token: string | undefined, ip: string): Promise<boolean> {
@@ -72,6 +88,9 @@ export interface CreatedServer {
 export function createServer(): CreatedServer {
   const app = express();
   const matchmaker = new Matchmaker();
+  const moderation = createModeration();
+  // Trust the platform proxy so req.ip reflects the real client IP.
+  app.set('trust proxy', 1);
 
   // ── HTTP ───────────────────────────────────────────────────────────────
   app.disable('x-powered-by');
@@ -103,6 +122,41 @@ export function createServer(): CreatedServer {
       queued: await matchmaker.queuedCount(),
     });
   });
+
+  // ── Admin moderation API ─────────────────────────────────────────────
+  // The panel (served from the web origin) calls these cross-origin, so the
+  // Socket.IO CORS config doesn't cover them — handle CORS here.
+  const adminLimiter = new KeyedRateLimiter(60, 1); // 60 req burst, 1/s refill per IP
+  app.use('/admin', (req, res, next) => {
+    const origin = req.header('origin');
+    if (origin && config.allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'x-admin-token, content-type');
+      res.setHeader('Access-Control-Max-Age', '600');
+      res.status(204).end();
+      return;
+    }
+    const ip = req.ip ?? 'unknown';
+    if (!adminLimiter.consume(`admin:${ip}`)) {
+      res.status(429).json({ error: 'rate_limited' });
+      return;
+    }
+    next();
+  });
+  // blockAndDisconnect is defined below (after endRoomFor); the router only
+  // calls it at request time, once everything is initialised.
+  app.use(
+    '/admin',
+    createAdminRouter({
+      matchmaker,
+      moderation,
+      blockAndDisconnect: (target) => blockAndDisconnect(target),
+    }),
+  );
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: 'not_found' });
@@ -191,10 +245,36 @@ export function createServer(): CreatedServer {
     return room.id;
   };
 
+  /**
+   * Moderator block: end the target's room as a block (partner sees a plain
+   * disconnect, never the reason) and drop their socket(s) so the block
+   * takes effect immediately.
+   */
+  const blockAndDisconnect = async (target: { sessionId?: string; ip?: string }): Promise<number> => {
+    const targets = new Map<string, Session>();
+    if (target.sessionId) {
+      const s = matchmaker.getSession(target.sessionId);
+      if (s) targets.set(s.id, s);
+    }
+    if (target.ip) {
+      for (const s of matchmaker.sessions.values()) {
+        if (s.ip === target.ip) targets.set(s.id, s);
+      }
+    }
+    let n = 0;
+    for (const s of targets.values()) {
+      await endRoomFor(s, 'blocked', 'disconnect');
+      const sock = s.socketId ? io.sockets.sockets.get(s.socketId) : undefined;
+      (sock as IoSocket | undefined)?.disconnect(true);
+      n += 1;
+    }
+    return n;
+  };
+
   // ── Socket handlers ────────────────────────────────────────────────────
 
   io.on('connection', (socket: IoSocket) => {
-    const ip = socket.handshake.address ?? 'unknown';
+    const ip = getClientIp(socket.handshake.headers, socket.handshake.address);
     let presenceTimer: NodeJS.Timeout | null = null;
 
     const requireSession = (): Session | null => {
@@ -214,6 +294,10 @@ export function createServer(): CreatedServer {
         socket.emit('session:error', { code: 'rate_limited', message: 'Too many attempts. Try again shortly.' });
         return;
       }
+      if (moderation.isBlocked('', ip)) {
+        socket.emit('session:error', { code: 'blocked', message: 'This device has been blocked from ChitChat.' });
+        return;
+      }
       if (!(await verifyTurnstile(turnstileToken, ip))) {
         socket.emit('session:error', { code: 'captcha_failed', message: 'Verification failed.' });
         return;
@@ -223,6 +307,7 @@ export function createServer(): CreatedServer {
         socket.emit('session:error', { code: 'server_busy', message: 'Server is busy. Try again shortly.' });
         return;
       }
+      session.ip = ip;
       (socket.data as { sessionId?: string }).sessionId = session.id;
       void db.upsertSession(session.id, session.username, 'online');
       socket.emit('session:ready', { sessionId: session.id, username: session.username });
@@ -238,6 +323,11 @@ export function createServer(): CreatedServer {
         socket.emit('session:error', { code: 'unknown_session', message: 'Session expired. Start a new one.' });
         return;
       }
+      if (moderation.isBlocked(session.id, ip)) {
+        socket.emit('session:error', { code: 'blocked', message: 'This device has been blocked from ChitChat.' });
+        return;
+      }
+      session.ip = ip;
       (socket.data as { sessionId?: string }).sessionId = session.id;
       const room = matchmaker.roomOf(session.id);
       if (room && session.status === 'chatting') {
@@ -340,6 +430,15 @@ export function createServer(): CreatedServer {
       const msg = { id: randomUUID(), sender: s.username, text: filtered.text, ts: now };
       io.to(roomName(room.id)).emit('message:new', msg);
       socket.emit('message:sent', { id: msg.id, ts: msg.ts });
+      // Moderation buffer: raw text, memory-only, discarded when the room ends.
+      moderation.recordMessage(room.id, {
+        id: msg.id,
+        sessionId: s.id,
+        username: s.username,
+        text: parsed.text,
+        ts: now,
+        flagged: flagExplicit(parsed.text),
+      });
     });
 
     socket.on('typing:start', () => {
@@ -486,6 +585,11 @@ export function createServer(): CreatedServer {
     void matchmaker.sweep().catch(() => undefined);
   }, 60_000);
   sweepTimer.unref?.();
+  // Drop moderation message buffers for rooms that no longer exist.
+  const modSweepTimer = setInterval(() => {
+    moderation.sweepRooms(new Set(matchmaker.rooms.keys()));
+  }, 5 * 60_000);
+  modSweepTimer.unref?.();
   // Daily 30-day retention purge of Supabase metadata (no-op if unconfigured).
   const purgeTimer = setInterval(
     () => {
