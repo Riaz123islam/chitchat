@@ -59,7 +59,7 @@ export const config = {
   turnstileSecret,
 
   // Tunables
-  maxMessageLength: 500,
+  maxMessageLength: 2000,
   queueStaleMs: 90_000,
   sessionIdleMs: 30 * 60_000,
   presenceTtlSec: 120,

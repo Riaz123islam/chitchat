@@ -281,8 +281,8 @@ export default function ChatPage() {
   const send = useCallback(() => {
     const text = draft.trim();
     if (!text || phase !== 'chatting') return;
-    if (text.length > 500) {
-      showNotice('Messages are limited to 500 characters.');
+    if (text.length > 2000) {
+      showNotice('Messages are limited to 2000 characters.');
       return;
     }
     getSocket().emit('message:send', { text });
@@ -489,7 +489,7 @@ export default function ChatPage() {
               }}
               placeholder="Type a message… (Enter to send)"
               rows={1}
-              maxLength={600}
+              maxLength={2000}
               aria-label="Message"
               className="chat-input max-h-32 flex-1 rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-[15px] text-zinc-100 placeholder:text-zinc-500 focus:border-indigo-400 focus:outline-none"
             />
