@@ -111,10 +111,19 @@ export default function ChatPage() {
     const socket = getSocket();
     setPhase('restoring');
 
+    // Restore is idempotent server-side: re-emit until it answers, so a
+    // single dropped handshake doesn't strand the user on the spinner.
+    let resumeAttempts = 0;
     const resume = () => {
       const s = sessionRef.current;
-      if (s) socket.emit('session:resume', { sessionId: s.sessionId });
+      if (s && socket.connected) {
+        resumeAttempts += 1;
+        socket.emit('session:resume', { sessionId: s.sessionId });
+      }
     };
+    const retryTimer = setInterval(() => {
+      if (phaseRef.current === 'restoring' && resumeAttempts < 4) resume();
+    }, 7000);
 
     const onConnect = () => {
       setReconnecting(false);
@@ -229,7 +238,7 @@ export default function ChatPage() {
     // answering, dropped events), stop spinning and offer a retry.
     restoreTimer.current = setTimeout(() => {
       if (phaseRef.current === 'restoring') setPhase('connection-lost');
-    }, 20_000);
+    }, 32_000);
 
     const ping = setInterval(() => {
       if (socket.connected) socket.emit('presence:ping');
@@ -237,6 +246,7 @@ export default function ChatPage() {
 
     return () => {
       clearInterval(ping);
+      clearInterval(retryTimer);
       if (restoreTimer.current) clearTimeout(restoreTimer.current);
       if (typingTimer.current) clearTimeout(typingTimer.current);
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
