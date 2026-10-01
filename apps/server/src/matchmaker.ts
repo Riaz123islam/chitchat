@@ -10,7 +10,13 @@
 
 import { randomUUID } from 'node:crypto';
 import { config } from './config.js';
-import { generateSessionId, generateUsername, isValidSessionId } from './identity.js';
+import {
+  generateSessionId,
+  generateUsername,
+  isValidSessionId,
+  sanitizeNickname,
+} from './identity.js';
+import { filterProfanity } from './profanity.js';
 import { countWithin, pruneOlderThan } from './ratelimit.js';
 import { createQueueStore, type QueueStore } from './store.js';
 import type { Room, RoomEndReason, Session } from './types.js';
@@ -51,14 +57,27 @@ export class Matchmaker {
 
   // ── Sessions ─────────────────────────────────────────────────────────────
 
-  createSession(socketId: string): Session | null {
+  createSession(socketId: string, requestedNickname?: unknown): Session | null {
     if (this.sessions.size >= MAX_SESSIONS) return null;
     const id = generateSessionId();
-    let username = generateUsername();
-    // Avoid username collisions among live sessions (cheap loop, tiny space).
-    const taken = new Set([...this.sessions.values()].map((s) => s.username));
-    let guard = 0;
-    while (taken.has(username) && guard++ < 10) username = generateUsername();
+    const taken = new Set([...this.sessions.values()].map((s) => s.username.toLowerCase()));
+    let username: string | null = null;
+    // Honor a user-chosen nickname when it is clean and not taken.
+    const wanted = sanitizeNickname(requestedNickname);
+    if (wanted && !filterProfanity(wanted).flagged && !taken.has(wanted.toLowerCase())) {
+      username = wanted;
+    } else if (wanted) {
+      // Taken: try a numeric suffix before giving up on the request.
+      for (let n = 2; n <= 99 && !username; n++) {
+        const candidate = `${wanted}${n}`;
+        if (candidate.length <= 20 && !taken.has(candidate.toLowerCase())) username = candidate;
+      }
+    }
+    if (!username) {
+      username = generateUsername();
+      let guard = 0;
+      while (taken.has(username.toLowerCase()) && guard++ < 10) username = generateUsername();
+    }
     const now = Date.now();
     const session: Session = {
       id,

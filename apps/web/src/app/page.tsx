@@ -34,6 +34,18 @@ function useOnlineCount() {
 export default function LandingPage() {
   const router = useRouter();
   const online = useOnlineCount();
+  const [nickname, setNickname] = useState('');
+
+  const startChatting = () => {
+    try {
+      const clean = nickname.trim().replace(/\s+/g, ' ');
+      if (clean) sessionStorage.setItem('chitchat:nickname', clean);
+      else sessionStorage.removeItem('chitchat:nickname');
+    } catch {
+      /* storage unavailable — proceed with a random nickname */
+    }
+    router.push('/searching');
+  };
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -62,8 +74,17 @@ export default function LandingPage() {
             ChitChat pairs you with a random stranger for a private, anonymous 1-to-1 text chat.
             No sign-up. No names. No message history. Just conversation.
           </p>
-          <div className="mt-9">
-            <PrimaryButton onClick={() => router.push('/searching')}>
+          <div className="mt-9 flex flex-col items-center gap-3">
+            <input
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder="Choose a nickname (optional)"
+              maxLength={20}
+              autoComplete="off"
+              aria-label="Choose a nickname"
+              className="w-64 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-center text-zinc-100 placeholder:text-zinc-500 focus:border-violet-400 focus:outline-none"
+            />
+            <PrimaryButton onClick={startChatting}>
               Start Chatting
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
@@ -77,8 +98,8 @@ export default function LandingPage() {
             </PrimaryButton>
           </div>
           <p className="mt-4 text-sm text-zinc-500">
-            You&rsquo;ll get a random nickname like <span className="text-zinc-300">CuriousFox42</span>.
-            Nobody knows who you are.
+            Pick your own nickname, or we&rsquo;ll give you a random one like{' '}
+            <span className="text-zinc-300">CuriousFox42</span>. Nobody knows who you are.
           </p>
         </div>
 

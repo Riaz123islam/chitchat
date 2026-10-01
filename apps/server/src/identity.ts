@@ -42,3 +42,26 @@ export function isValidSessionId(id: unknown): id is string {
 export function isValidRoomId(id: unknown): id is string {
   return typeof id === 'string' && UUID_RE.test(id);
 }
+
+// ── User-chosen nicknames ────────────────────────────────────────────────
+
+const NICKNAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,18}[\p{L}\p{N}]$/u;
+const RESERVED = new Set([
+  'admin', 'administrator', 'system', 'moderator', 'mod',
+  'chitchat', 'support', 'anonymous', 'stranger',
+]);
+
+/**
+ * Validate a user-requested nickname. Returns the cleaned nickname, or null
+ * when it is missing/invalid. Callers fall back to generateUsername().
+ * Profanity itself is checked by the caller via filterProfanity to avoid a
+ * circular import.
+ */
+export function sanitizeNickname(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const cleaned = input.trim().replace(/\s+/g, ' ');
+  if (cleaned.length < 2 || cleaned.length > 20) return null;
+  if (!NICKNAME_RE.test(cleaned)) return null;
+  if (RESERVED.has(cleaned.toLowerCase())) return null;
+  return cleaned;
+}

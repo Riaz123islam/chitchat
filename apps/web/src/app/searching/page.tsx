@@ -63,6 +63,15 @@ function TurnstileWidget({ onToken }: { onToken: TokenCallback }) {
 
 type Phase = 'verifying' | 'connecting' | 'searching' | 'error';
 
+function loadNickname(): string | undefined {
+  try {
+    const v = sessionStorage.getItem('chitchat:nickname')?.trim();
+    return v ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default function SearchingPage() {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>(TURNSTILE_SITE_KEY ? 'verifying' : 'connecting');
@@ -86,7 +95,11 @@ export default function SearchingPage() {
         if (saved) {
           socket.emit('session:resume', { sessionId: saved.sessionId });
         } else {
-          socket.emit('session:start', turnstileToken ? { turnstileToken } : {});
+          const nickname = loadNickname();
+          socket.emit(
+            'session:start',
+            turnstileToken ? { turnstileToken, nickname } : { nickname },
+          );
         }
       };
 
@@ -106,7 +119,7 @@ export default function SearchingPage() {
           } catch {
             /* ignore */
           }
-          socket.emit('session:start', turnstileToken ? { turnstileToken } : {});
+          socket.emit('session:start', { turnstileToken, nickname: loadNickname() });
         } else {
           fail(p.message || 'Could not start a session.');
         }

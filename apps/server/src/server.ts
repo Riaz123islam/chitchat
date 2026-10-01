@@ -205,7 +205,7 @@ export function createServer(): CreatedServer {
       return s;
     };
 
-    socket.on('session:start', async ({ turnstileToken }) => {
+    socket.on('session:start', async ({ turnstileToken, nickname }) => {
       if ((socket.data as { sessionId?: string }).sessionId) {
         socket.emit('session:error', { code: 'already_started', message: 'Session already started.' });
         return;
@@ -218,7 +218,7 @@ export function createServer(): CreatedServer {
         socket.emit('session:error', { code: 'captcha_failed', message: 'Verification failed.' });
         return;
       }
-      const session = matchmaker.createSession(socket.id);
+      const session = matchmaker.createSession(socket.id, nickname);
       if (!session) {
         socket.emit('session:error', { code: 'server_busy', message: 'Server is busy. Try again shortly.' });
         return;

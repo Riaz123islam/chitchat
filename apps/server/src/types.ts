@@ -46,7 +46,7 @@ export type RoomEndReason =
 // ── Socket.IO event payloads (client → server) ──────────────────────────────
 
 export interface ClientToServerEvents {
-  'session:start': (payload: { turnstileToken?: string }) => void;
+  'session:start': (payload: { turnstileToken?: string; nickname?: string }) => void;
   'session:resume': (payload: { sessionId: string }) => void;
   'queue:join': () => void;
   'queue:leave': () => void;
